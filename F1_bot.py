@@ -1,6 +1,7 @@
 import datetime
 import os
-
+import asyncpg
+import asyncio
 import aiohttp
 import pytz
 from dotenv import load_dotenv
@@ -8,13 +9,102 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 load_dotenv()
-
+DB_POOL: asyncpg.Pool | None = None
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat_id = user.id
     await update.message.reply_text(
-        'Нажми на кнопку в меню ниже \n\np.s Ответ от сервера занимает до 20 секунд :('
-    )
+            'Нажми на кнопку в меню ниже \n\np.s Ответ от сервера занимает до 20 секунд :('
+        )
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as connection:
+                await connection.execute("""
+                    INSERT INTO f1_bot (chat_id)
+                    VALUES ($1)
+                    ON CONFLICT (chat_id) DO NOTHING
+                    """, chat_id)
+            print(f'Пользователь {chat_id} добавлен в DB')
+        except Exception as e:
+            print(f'Ошибка при сохранении в DB {e}')
+        await update.message.reply_text(f'Ваш chat_id ={chat_id} добавлен базу данных для рассылки расписания гонок')
 
+async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat_id = user.id
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as connection:
+                await connection.execute("""
+                UPDATE f1_bot 
+                SET is_subscribe = $1 
+                WHERE chat_id = $2;                
+                """, False, chat_id)
+            print(f'Пользователь {chat_id} отписался от рассылки')
+        except Exception as e:
+            print(f'Ошибка при отписке пользователся {chat_id}: {e}')
+    await update.message.reply_text('✅ Вы успешно отписались от рассылки')
+
+async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat_id = user.id
+    if DB_POOL:
+        try:
+            async with DB_POOL.acquire() as connection:
+                await connection.execute("""
+                UPDATE f1_bot 
+                SET is_subscribe = $1 
+                WHERE chat_id = $2;                
+                """,True,chat_id)
+            print(f'Пользователь {chat_id} подписался на рассылку')
+        except Exception as e:
+            print(f'Ошибка при подписке пользователся {chat_id}: {e}')
+    await update.message.reply_text('✅ Вы успешно подписались на рассылку')
+
+async def next_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat_id = user.id
+    next_race_url = 'https://api.jolpi.ca/ergast/f1/current/next.json'
+    next_race_message = 'Следующая гонка:\n'
+    async with aiohttp.ClientSession() as session:
+        async with session.get(next_race_url) as resp:
+            data = await resp.json()
+            table = data['MRData']['RaceTable']['Races'][0]
+            country = table['raceName']
+            time = table['time']
+            clean_time = time.replace('Z', '')
+            date = table['date']
+            date_time = datetime.datetime.strptime(
+                f'{date} {clean_time}', '%Y-%m-%d %H:%M:%S'
+            )
+            utc_datetime = pytz.utc.localize(date_time)
+            samara_timezone = pytz.timezone('Europe/Samara')
+            samara_datetime = utc_datetime.astimezone(samara_timezone)
+            next_race_message += f'{country}, начало в {samara_datetime.strftime("%H:%M")}'
+            await update.message.reply_text(next_race_message)
+
+async def next_qualifying(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    next_race_url = 'https://api.jolpi.ca/ergast/f1/current/next.json'
+    next_race_message = 'Следующая квалификация:\n'
+    async with aiohttp.ClientSession() as session:
+        async with session.get(next_race_url) as resp:
+            data = await resp.json()
+            table = data['MRData']['RaceTable']['Races'][0]
+            country = table['raceName']
+            time = table['Qualifying']['time']
+            clean_time = time.replace('Z', '')
+            date = table['Qualifying']['date']
+            date_time = datetime.datetime.strptime(
+                f'{date} {clean_time}', '%Y-%m-%d %H:%M:%S'
+            )
+            utc_datetime = pytz.utc.localize(date_time)
+            samara_timezone = pytz.timezone('Europe/Samara')
+            samara_datetime = utc_datetime.astimezone(samara_timezone)
+            next_race_message += (
+                f'{country}, начало в {samara_datetime.strftime("%H:%M")}'
+            )
+            await update.message.reply_text(next_race_message)
 
 async def composition_of_the_team(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -100,16 +190,41 @@ async def race(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 last_race += f'{position}. {team_name} {name}\n'
             await update.message.reply_text(last_race)
 
+async def create_db_pool(application):
+    global DB_POOL
+    db_url = os.getenv('DATABASE_URL') # Безопасное получение ключа
+    if not db_url:
+        print('DATABASE_URL не найден в env')
+        return
+    try:
+        DB_POOL = await asyncpg.create_pool(
+            dsn=db_url, # Правильное название аргумента
+            min_size=2,
+            max_size=3
+        )
+        print('Пул подключений к PostgreSQL создан!')
+    except Exception as e:
+        print(f'Ошибка при создании пула: {e}')
+
+
+
+
 
 if __name__ == '__main__':
     token = os.getenv('BOT_TOKEN')
     if token is None:
         raise ValueError('Токен не найден')
-    app = ApplicationBuilder().token(token).build()
+    app = ApplicationBuilder().token(token).post_init(create_db_pool).build()
 
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CommandHandler('teams', composition_of_the_team))
     app.add_handler(CommandHandler('last_qualifying', schedule_qualifying))
     app.add_handler(CommandHandler('last_race', race))
+    app.add_handler(CommandHandler('next_race', next_race))
+    app.add_handler(CommandHandler('next_qualifying',next_qualifying ))
+    app.add_handler(CommandHandler('subscribe', subscribe))
+    app.add_handler(CommandHandler('unsubscribe', unsubscribe))
+
+
     print('Бот запущен и ждет сообщений')
     app.run_polling()
