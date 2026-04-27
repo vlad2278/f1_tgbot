@@ -20,15 +20,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if DB_POOL:
         try:
             async with DB_POOL.acquire() as connection:
-                await connection.execute("""
+                status = await connection.execute("""
                     INSERT INTO f1_bot (chat_id)
                     VALUES ($1)
                     ON CONFLICT (chat_id) DO NOTHING
                     """, chat_id)
-            print(f'Пользователь {chat_id} добавлен в DB')
+                if status =='INSERT 0 1':
+                    print(f'Пользователь {chat_id} добавлен в DB')
+                    await update.message.reply_text(f'Ваш chat_id ={chat_id} добавлен базу данных для рассылки расписания гонок')
+                else:
+                    print(f'Пользователь {chat_id} уже есть в базе')
+                    await update.message.reply_text('Вы уже есть в базе данных')
         except Exception as e:
-            print(f'Ошибка при сохранении в DB {e}')
-        await update.message.reply_text(f'Ваш chat_id ={chat_id} добавлен базу данных для рассылки расписания гонок')
+            print(f'Ошибка при сохранении в DB: {e}')
+            await update.message.reply_text(f'Ваш chat_id:{chat_id}, не удалось подключить к авторассылке ошибка {e}')
+    else:
+        await update.message.reply_text('Ошибка инициализации пула, авторассылка отключена')
 
 async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -36,15 +43,29 @@ async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if DB_POOL:
         try:
             async with DB_POOL.acquire() as connection:
-                await connection.execute("""
+                status = await connection.execute("""
                 UPDATE f1_bot 
-                SET is_subscribe = $1 
-                WHERE chat_id = $2;                
-                """, False, chat_id)
-            print(f'Пользователь {chat_id} отписался от рассылки')
+                SET is_subscribe = False 
+                WHERE chat_id = $1::bigint AND is_subscribe = True;                
+                """,chat_id)
+                if status == 'UPDATE 1':
+                    await update.message.reply_text('✅ Вы успешно отписались от рассылки')
+                    print(f'Пользователь {chat_id} отписался от рассылки')
+                    return
+                user_exists = await connection.fetchval("""
+                SELECT * FROM f1_bot 
+                WHERE chat_id = $1::bigint;
+                """,chat_id)
+                if not user_exists:
+                    await update.message.reply_text('❌ Тебя нет в базе. Рассылка не была подключена')
+                else:
+                    await update.message.reply_text('Вы уже отписаны от рассылки')
+
         except Exception as e:
-            print(f'Ошибка при отписке пользователся {chat_id}: {e}')
-    await update.message.reply_text('✅ Вы успешно отписались от рассылки')
+            print(f'Ошибка при отписке пользователя {chat_id}: {e}')
+            await update.message.reply_text(f'Произошла ошибка: {e}')
+    else:
+        await update.message.reply_text('Ошибка инициализации пула')
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -52,15 +73,28 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if DB_POOL:
         try:
             async with DB_POOL.acquire() as connection:
-                await connection.execute("""
+                status = await connection.execute("""
                 UPDATE f1_bot 
-                SET is_subscribe = $1 
-                WHERE chat_id = $2;                
-                """,True,chat_id)
-            print(f'Пользователь {chat_id} подписался на рассылку')
+                SET is_subscribe = True 
+                WHERE chat_id = $1::bigint AND is_subscribe = False;                
+                """,chat_id)
+                if status == 'UPDATE 1':
+                    print(f'Пользователь {chat_id} подписался на рассылку')
+                    await update.message.reply_text('✅ Вы успешно подписались на рассылку')
+                    return
+                user_exists = await connection.fetchval("""
+                SELECT * FROM f1_bot 
+                WHERE chat_id = $1::bigint;
+                """,chat_id)
+                if not user_exists:
+                    await update.message.reply_text('❌ Тебя нет в базе. Нажми /start')
+                else:
+                    await update.message.reply_text('Вы уже подписаны на рассылку')
         except Exception as e:
-            print(f'Ошибка при подписке пользователся {chat_id}: {e}')
-    await update.message.reply_text('✅ Вы успешно подписались на рассылку')
+            print(f'Ошибка при подписке пользователя {chat_id}: {e}')
+            await update.message.reply_text(f'Произошла ошибка: {e}')
+    else:
+        await update.message.reply_text('Ошибка инициализации пула')
 
 async def next_race(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -198,7 +232,7 @@ async def create_db_pool(application):
         return
     try:
         DB_POOL = await asyncpg.create_pool(
-            dsn=db_url, # Правильное название аргумента
+            dsn=db_url,
             min_size=2,
             max_size=3
         )
