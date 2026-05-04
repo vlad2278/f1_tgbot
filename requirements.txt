@@ -3,6 +3,7 @@ aiohttp==3.13.5
 aiosignal==1.4.0
 annotated-types==0.7.0
 anyio==4.13.0
+APScheduler==3.11.2
 asyncpg==0.31.0
 attrs==26.1.0
 cattrs==26.1.0
@@ -50,6 +51,7 @@ timple==0.1.8
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 tzdata==2026.1
+tzlocal==5.3.1
 url-normalize==2.2.1
 urllib3==2.6.3
 websockets==16.0
