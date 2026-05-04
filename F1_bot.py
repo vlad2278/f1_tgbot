@@ -244,11 +244,17 @@ async def post_init_setup(application):
     if not db_url:
         print('DATABASE_URL не найден в env')
         return
-    try:
-        DB_POOL = await asyncpg.create_pool(dsn=db_url, min_size=2, max_size=3)
-        print('Пул подключений к PostgreSQL создан!')
-    except Exception as e:
-        print(f'Ошибка при создании пула: {e}')
+    for attempt in range(5):
+        try:
+            DB_POOL = await asyncpg.create_pool(dsn=db_url, min_size=2, max_size=3)
+            print('Пул подключений к PostgreSQL создан!')
+            break
+        except Exception as e:
+            print(f'База еще не готова (попытка {attempt + 1}/5). Ошибка: {e}')
+            await asyncio.sleep(3)
+    if not DB_POOL:
+        print('Не удалось подключиться к бд')
+        return
     application.job_queue.run_once(dynamic_auto_mailing_text, when=1)
 
 
