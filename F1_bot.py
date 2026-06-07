@@ -168,11 +168,10 @@ async def composition_of_the_team(
             await update.message.reply_text(composition_message)
 
 
-async def schedule_qualifying(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-):
+async def schedule_qualifying(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    round_num = await get_latest_qualifying_round()
     schedule_url = (
-        'https://api.jolpi.ca/ergast/f1/current/last/qualifying.json'
+        f'https://api.jolpi.ca/ergast/f1/current/{round_num}/qualifying.json'
     )
     async with aiohttp.ClientSession() as session:
         async with session.get(schedule_url) as resp:
@@ -312,13 +311,25 @@ async def get_next_qualifying_text():
         async with session.get(next_race_url) as resp:
             data = await resp.json()
             table = data['MRData']['RaceTable']['Races'][0]
-            country = table['raceName']
-            time = table['Qualifying']['time']
-            clean_time = time.replace('Z', '')
-            date = table['Qualifying']['date']
-            date_time = datetime.datetime.strptime(
-                f'{date} {clean_time}', '%Y-%m-%d %H:%M:%S'
+
+            # Проверяем, не прошла ли уже квалификация этого раунда
+            qual_date = f'{table["Qualifying"]["date"]} {table["Qualifying"]["time"].replace("Z", "")}'
+            qual_dt = pytz.utc.localize(
+                datetime.datetime.strptime(qual_date, '%Y-%m-%d %H:%M:%S')
             )
+            now_utc = datetime.datetime.now(pytz.utc)
+
+            if qual_dt < now_utc:
+                # Квалификация уже была — берём следующий раунд
+                round_num = int(table['round']) + 1
+                url2 = f'https://api.jolpi.ca/ergast/f1/current/{round_num}.json'
+                async with session.get(url2) as resp2:
+                    data2 = await resp2.json()
+                    table = data2['MRData']['RaceTable']['Races'][0]
+            country = table['raceName']
+            clean_time = table['Qualifying']['time'].replace('Z', '')
+            date = table['Qualifying']['date']
+            date_time = datetime.datetime.strptime(f'{date} {clean_time}', '%Y-%m-%d %H:%M:%S')
             utc_datetime = pytz.utc.localize(date_time)
             samara_timezone = pytz.timezone('Europe/Samara')
             samara_datetime = utc_datetime.astimezone(samara_timezone)
@@ -386,6 +397,27 @@ async def dynamic_auto_mailing_text(context: ContextTypes.DEFAULT_TYPE):
                 when=alert_15m,
                 data=f'{name} начнется через 15 минут',
             )
+
+async def get_latest_qualifying_round() -> int:
+    url = 'https://api.jolpi.ca/ergast/f1/current/next.json'
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            data = await resp.json()
+            table = data['MRData']['RaceTable']['Races'][0]
+            round_num = int(table['round'])
+
+            qual_date = (
+                f'{table["Qualifying"]["date"]} '
+                f'{table["Qualifying"]["time"].replace("Z", "")}'
+            )
+            qual_dt = pytz.utc.localize(
+                datetime.datetime.strptime(qual_date, '%Y-%m-%d %H:%M:%S')
+            )
+            now_utc = datetime.datetime.now(pytz.utc)
+
+            # Если квалификация этого раунда уже прошла — берём его,
+            # иначе берём предыдущий раунд
+            return round_num if qual_dt < now_utc else round_num - 1
 
 
 if __name__ == '__main__':
